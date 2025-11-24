@@ -1,79 +1,119 @@
-import socket
-import threading
+from fastapi import FastAPI, Request, Response
 import logging
 import binascii
+import uvicorn
 
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class GalileoSKYServer:
-    def __init__(self, host='localhost', port=8000):
-        self.host = host
-        self.port = port
+app = FastAPI(title="GalileoSKY Proxy")
+
+class GalileoSKYProtocol:
+    """Обработчик протокола GalileoSKY"""
     
-    def calculate_crc(self, data):
-        crc = 0xFFFF
-        for byte in data:
-            crc ^= byte
-            for _ in range(8):
-                if crc & 0x0001:
-                    crc = (crc >> 1) ^ 0xA001
-                else:
-                    crc = crc >> 1
-        return crc
-    
-    def create_response(self, packet_id=0):
-        response = b'\x00\x01\x00\x02'
-        response += packet_id.to_bytes(2, 'big')
-        response += b'\x00'
+    @staticmethod
+    def create_response(packet_id: int = 0) -> bytes:
+        """Создает корректный ответ для устройства GalileoSKY"""
+        # Базовый успешный ответ: префикс + длина + ID + флаги + CRC
+        response = b'\x00\x01'  # Префикс
+        response += b'\x00\x02'  # Длина пакета (2 байта)
+        response += packet_id.to_bytes(2, 'big')  # ID пакета
+        response += b'\x00'  # Флаги (успех)
         
-        crc = self.calculate_crc(response)
-        response += crc.to_bytes(2, 'little')
+        # Вычисляем CRC
+        crc = GalileoSKYProtocol.calculate_crc(response)
+        response += crc.to_bytes(2, 'big')
+        
         return response
     
-    def handle_client(self, conn, addr):
-        logger.info(f"🎉 CONNECTED from {addr}")
+    @staticmethod
+    def calculate_crc(data: bytes) -> int:
+        """Вычисление CRC16 для пакета"""
+        crc = 0xFFFF
+        for byte in data:
+            crc ^= byte << 8
+            for _ in range(8):
+                if crc & 0x8000:
+                    crc = (crc << 1) ^ 0x1021
+                else:
+                    crc <<= 1
+                crc &= 0xFFFF
+        return crc
+
+@app.post("/")
+async def receive_galileosky_data(request: Request):
+    """Основной эндпоинт для устройств GalileoSKY"""
+    try:
+        # Получаем сырые данные
+        raw_data = await request.body()
         
-        try:
-            data = conn.recv(1024)
-            if data:
-                logger.info(f"📨 Received {len(data)} bytes")
-                logger.info(f"🔧 Hex: {binascii.hexlify(data).upper().decode()}")
-                
-                packet_id = 0
-                if len(data) >= 6:
-                    packet_id = int.from_bytes(data[4:6], 'big')
-                    logger.info(f"🆔 Packet ID: {packet_id}")
-                
-                response = self.create_response(packet_id)
-                conn.send(response)
-                logger.info(f"📤 Response: {binascii.hexlify(response).upper().decode()}")
-                logger.info("✅ SUCCESS! Device connected!")
-            
-        except Exception as e:
-            logger.error(f"Error: {e}")
-        finally:
-            conn.close()
-    
-    def start(self):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind((self.host, self.port))
-                s.listen(5)
-                
-                logger.info(f"🚀 Server started on {self.host}:{self.port}")
-                logger.info("📡 Waiting for Serveo tunnel...")
-                
-                while True:
-                    conn, addr = s.accept()
-                    thread = threading.Thread(target=self.handle_client, args=(conn, addr))
-                    thread.daemon = True
-                    thread.start()
-                    
-        except Exception as e:
-            logger.error(f"Server error: {e}")
+        logger.info(f"📨 Received {len(raw_data)} bytes from device")
+        logger.info(f"🔧 Hex data: {binascii.hexlify(raw_data).decode('utf-8')}")
+        
+        # Пытаемся распарсить ID пакета из входящих данных
+        packet_id = 0
+        if len(raw_data) >= 6:
+            try:
+                packet_id = int.from_bytes(raw_data[4:6], 'big')
+                logger.info(f"🆔 Packet ID: {packet_id}")
+            except:
+                pass
+        
+        # Логируем структуру пакета
+        if len(raw_data) >= 8:
+            logger.info(f"📋 Packet structure:")
+            logger.info(f"   Prefix: {binascii.hexlify(raw_data[0:2]).decode()}")
+            logger.info(f"   Length: {int.from_bytes(raw_data[2:4], 'big')}")
+            logger.info(f"   Packet ID: {packet_id}")
+            logger.info(f"   Flags: {raw_data[6]:02x}")
+            if len(raw_data) > 8:
+                logger.info(f"   Payload: {len(raw_data[7:-2])} bytes")
+            logger.info(f"   CRC: {binascii.hexlify(raw_data[-2:]).decode()}")
+        
+        # Создаем корректный ответ для GalileoSKY
+        response_data = GalileoSKYProtocol.create_response(packet_id)
+        
+        logger.info(f"📤 Sending response: {binascii.hexlify(response_data).decode('utf-8')}")
+        logger.info("✅ Successfully processed GalileoSKY packet")
+        
+        # Возвращаем бинарный ответ
+        return Response(
+            content=response_data,
+            media_type="application/octet-stream"
+        )
+        
+    except Exception as e:
+        logger.error(f"💥 Error processing request: {str(e)}")
+        # Возвращаем ошибку в формате GalileoSKY
+        error_response = b'\x00\x01\x00\x02\x00\x01\x00\x00'  # Базовый ответ с флагом ошибки
+        return Response(content=error_response, media_type="application/octet-stream")
+
+@app.get("/")
+async def health_check():
+    """Проверка здоровья сервера"""
+    return {
+        "status": "running",
+        "service": "GalileoSKY Proxy", 
+        "platform": "macOS",
+        "endpoint": "POST /"
+    }
+
+@app.post("/galileosky")
+async def alternative_endpoint(request: Request):
+    """Альтернативный эндпоинт для GalileoSKY"""
+    return await receive_galileosky_data(request)
 
 if __name__ == "__main__":
-    server = GalileoSKYServer('localhost', 8000)
-    server.start()
+    logger.info("🚀 Starting GalileoSKY Proxy Server for macOS")
+    logger.info("📍 Listening on: 0.0.0.0:8000")
+    logger.info("📡 Endpoint: POST http://<your_ip>:8000/")
+    logger.info("🔧 Protocol: GalileoSKY binary")
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        access_log=True
+    )
