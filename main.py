@@ -62,7 +62,7 @@ class GalileoskyServer:
                 if not data:
                     break
                     
-                logging.info(f"Получены данные от {client_address}: {binascii.hexlify(data).upper()}")
+                logging.info(f"Получены сырые данные: {binascii.hexlify(data).upper().decode()}")
                 buffer += data
                 buffer = self.process_buffer(buffer, client_socket, client_address, client_info)
                 
@@ -82,7 +82,9 @@ class GalileoskyServer:
                     break
                     
                 length_bytes = struct.unpack_from('<H', buffer, 1)[0]
-                packet_length = (length_bytes & 0x7FFF) + 5
+                packet_length = (length_bytes & 0x7FFF) + 5  # +3 байта заголовок+длина, +2 CRC
+                
+                logging.info(f"Ожидаемая длина пакета: {packet_length} байт, в буфере: {len(buffer)} байт")
                 
                 if len(buffer) < packet_length:
                     break
@@ -102,13 +104,13 @@ class GalileoskyServer:
                 if len(buffer) < packet_length:
                     break
                     
-                packet_data = buffer[:packlet_length]
+                packet_data = buffer[:packet_length]
                 buffer = buffer[packet_length:]
                 
                 self.process_compressed_packet(packet_data, client_socket, client_address, client_info)
                 
             else:
-                logging.warning(f"Неизвестный заголовок: 0x{header:02x}, весь буфер: {binascii.hexlify(buffer).upper()}")
+                logging.warning(f"Неизвестный заголовок: 0x{header:02x}")
                 buffer = buffer[1:]
                 
         return buffer
@@ -116,11 +118,15 @@ class GalileoskyServer:
     def process_packet(self, data, client_socket, client_address, client_info):
         """Обработка обычного пакета"""
         try:
+            # СРАЗУ отправляем подтверждение
+            ack_packet = self.create_ack_packet(data)
+            client_socket.send(ack_packet)
+            logging.info(f"Отправлено подтверждение: {binascii.hexlify(ack_packet).upper().decode()}")
+            
+            # Затем разбираем пакет
             parsed = self.parse_head_packet(data)
             
-            logging.info(f"Пакет от {client_address}: "
-                        f"Длина={parsed['length']}, "
-                        f"CRC={'VALID' if parsed['crc_valid'] else 'INVALID'}")
+            logging.info(f"Пакет от {client_address}: Длина={parsed['length']}, CRC={'VALID' if parsed['crc_valid'] else 'INVALID'}")
             
             # Извлекаем IMEI и ID устройства
             for tag in parsed['tags']:
@@ -130,11 +136,6 @@ class GalileoskyServer:
                 elif tag['tag'] == '0x04' and tag['name'] == 'ID устройства':
                     client_info['device_id'] = tag['value']
             
-            # ОБЯЗАТЕЛЬНО отправляем подтверждение ДО обработки данных
-            ack_packet = self.create_ack_packet(data)
-            client_socket.send(ack_packet)
-            logging.info(f"Отправлено подтверждение: {binascii.hexlify(ack_packet).upper()}")
-            
             # Обрабатываем данные
             self.process_data(parsed, client_info)
             
@@ -142,7 +143,7 @@ class GalileoskyServer:
             logging.error(f"Ошибка обработки пакета: {e}")
     
     def parse_head_packet(self, data):
-        """Разбор первого пакета с улучшенной обработкой тегов"""
+        """Разбор первого пакета"""
         if len(data) < 5:
             raise ValueError("Packet too short")
         
@@ -165,69 +166,91 @@ class GalileoskyServer:
         tags = []
         expected_end = 3 + actual_length - 2  # -2 для CRC
         
+        logging.info(f"Разбор пакета: длина={actual_length}, позиция={index}, ожидаемый конец={expected_end}")
+        
         while index < expected_end and index < len(data):
-            tag = data[index]
-            index += 1
-            
             if index >= len(data):
                 break
                 
+            tag = data[index]
+            index += 1
+            
+            logging.info(f"Обработка тега 0x{tag:02x} на позиции {index-1}")
+            
             try:
-                if tag == 0x01:  # Тип терминала
+                if tag == 0x01:  # Тип терминала (1 байт)
                     if index < len(data):
                         tag_data = data[index]
                         index += 1
                         tags.append({'tag': '0x01', 'name': 'Тип терминала', 'value': tag_data})
-                
-                elif tag == 0x02:  # Версия прошивки
+                    else:
+                        break
+                        
+                elif tag == 0x02:  # Версия прошивки (1 байт)
                     if index < len(data):
                         tag_data = data[index]
                         index += 1
                         tags.append({'tag': '0x02', 'name': 'Версия прошивки', 'value': tag_data})
-                
-                elif tag == 0x03:  # IMEI
+                    else:
+                        break
+                        
+                elif tag == 0x03:  # IMEI (15 байт)
                     if index + 14 < len(data):
                         imei_bytes = data[index:index+15]
                         imei = imei_bytes.decode('ascii', errors='ignore')
                         index += 15
                         tags.append({'tag': '0x03', 'name': 'IMEI', 'value': imei})
-                
-                elif tag == 0x04:  # ID устройства
+                    else:
+                        break
+                        
+                elif tag == 0x04:  # ID устройства (2 байта)
                     if index + 1 < len(data):
                         device_id = struct.unpack_from('<H', data, index)[0]
                         index += 2
                         tags.append({'tag': '0x04', 'name': 'ID устройства', 'value': device_id})
-                
-                elif tag == 0xE2:  # Данные пользователя 0
+                    else:
+                        break
+                        
+                elif tag == 0xE2:  # Данные пользователя 0 (4 байта)
                     if index + 3 < len(data):
                         user_data = struct.unpack_from('<I', data, index)[0]
                         index += 4
                         tags.append({'tag': '0xE2', 'name': 'Данные пользователя 0', 'value': user_data})
-                
-                elif tag == 0xA0:  # CAN8BITR15
+                    else:
+                        break
+                        
+                elif tag == 0xA0:  # CAN8BITR15 (1 байт)
                     if index < len(data):
                         can_data = data[index]
                         index += 1
                         tags.append({'tag': '0xA0', 'name': 'CAN8BITR15', 'value': can_data})
-                
-                elif tag == 0x97:  # Неизвестный тег, пропускаем 1 байт
+                    else:
+                        break
+                        
+                elif tag == 0x97:  # Неизвестный тег (1 байт)
                     if index < len(data):
                         tag_data = data[index]
                         index += 1
-                        tags.append({'tag': '0x97', 'name': 'Неизвестный тег', 'value': tag_data})
-                
-                elif tag == 0xA7:  # Неизвестный тег, пропускаем 1 байт
+                        tags.append({'tag': '0x97', 'name': 'Неизвестный тег 0x97', 'value': tag_data})
+                    else:
+                        break
+                        
+                elif tag == 0xA7:  # Неизвестный тег (1 байт)
                     if index < len(data):
                         tag_data = data[index]
                         index += 1
-                        tags.append({'tag': '0xA7', 'name': 'Неизвестный тег', 'value': tag_data})
-                
-                elif tag == 0xE3:  # Данные пользователя 1
+                        tags.append({'tag': '0xA7', 'name': 'Неизвестный тег 0xA7', 'value': tag_data})
+                    else:
+                        break
+                        
+                elif tag == 0xE3:  # Данные пользователя 1 (4 байта)
                     if index + 3 < len(data):
                         user_data = struct.unpack_from('<I', data, index)[0]
                         index += 4
                         tags.append({'tag': '0xE3', 'name': 'Данные пользователя 1', 'value': user_data})
-                
+                    else:
+                        break
+                        
                 elif tag == 0xFE:  # Расширенные теги
                     if index + 1 < len(data):
                         ext_tags_length = struct.unpack_from('<H', data, index)[0]
@@ -241,41 +264,28 @@ class GalileoskyServer:
                                 ext_tag = struct.unpack_from('<H', data, index)[0]
                                 index += 2
                                 
-                                if ext_tag == 0x0001:
-                                    if index + 3 < len(data):
-                                        ext_value = struct.unpack_from('<I', data, index)[0]
-                                        index += 4
-                                        ext_tags.append({'tag': f'0x{ext_tag:04x}', 'value': ext_value})
+                                if ext_tags_end - index >= 4:
+                                    ext_value = struct.unpack_from('<I', data, index)[0]
+                                    index += 4
+                                    ext_tags.append({'tag': f'0x{ext_tag:04x}', 'value': ext_value})
                                 else:
-                                    if ext_tags_end - index >= 4:
-                                        index += 4
+                                    break
+                            else:
+                                break
                         
                         tags.append({'tag': '0xFE', 'name': 'Расширенные теги', 'value': ext_tags})
-                
-                else:
-                    # Для неизвестных тегов пытаемся определить длину по типу тега
-                    if tag >= 0x10 and tag <= 0x1F:  # 2-байтные теги
-                        if index + 1 < len(data):
-                            tag_data = struct.unpack_from('<H', data, index)[0]
-                            index += 2
-                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег (2 байта)', 'value': tag_data})
-                    elif tag >= 0x20 and tag <= 0x2F:  # 4-байтные теги  
-                        if index + 3 < len(data):
-                            tag_data = struct.unpack_from('<I', data, index)[0]
-                            index += 4
-                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег (4 байта)', 'value': tag_data})
-                    elif tag >= 0x30 and tag <= 0x3F:  # 1-байтные теги
-                        if index < len(data):
-                            tag_data = data[index]
-                            index += 1
-                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег (1 байт)', 'value': tag_data})
                     else:
-                        # По умолчанию пропускаем 1 байт
-                        if index < len(data):
-                            tag_data = data[index]
-                            index += 1
-                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег', 'value': tag_data})
-                            
+                        break
+                        
+                else:
+                    # Для неизвестных тегов пропускаем 1 байт по умолчанию
+                    if index < len(data):
+                        tag_data = data[index]
+                        index += 1
+                        tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег', 'value': tag_data})
+                    else:
+                        break
+                        
             except Exception as e:
                 logging.error(f"Ошибка разбора тега 0x{tag:02x}: {e}")
                 break
@@ -285,33 +295,39 @@ class GalileoskyServer:
         # Проверка контрольной суммы
         if 3 + actual_length + 2 <= len(data):
             received_crc = struct.unpack_from('<H', data, 3 + actual_length)[0]
+            # CRC рассчитывается для данных БЕЗ CRC поля
             calculated_crc = self.crc16_modbus(data[:3 + actual_length])
             result['crc_valid'] = (received_crc == calculated_crc)
             result['received_crc'] = received_crc
             result['calculated_crc'] = calculated_crc
+            
+            logging.info(f"CRC проверка: получено=0x{received_crc:04X}, вычислено=0x{calculated_crc:04X}, valid={result['crc_valid']}")
         else:
             result['crc_valid'] = False
+            logging.warning("Недостаточно данных для проверки CRC")
         
         return result
     
     def create_ack_packet(self, received_packet):
-        """Создание пакета подтверждения приема - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+        """
+        Создание пакета подтверждения приема
+        ВАЖНО: В поле контрольной суммы отправляется CRC полученного пакета
+        """
         packet = bytearray()
         
         # Заголовок подтверждения
         packet.append(0x02)
         
-        # Контрольная сумма полученного пакета (рассчитывается для ВСЕГО пакета)
-        # Включая заголовок, длину и данные, но БЕЗ CRC полученного пакета
+        # Контрольная сумма полученного пакета (берется ИЗ полученного пакета)
         if len(received_packet) >= 5:
-            # Берем весь пакет кроме последних 2 байт (CRC)
-            data_for_crc = received_packet[:-2] if len(received_packet) > 2 else received_packet
-            crc_received = self.crc16_modbus(data_for_crc)
+            # Получаем CRC из полученного пакета (последние 2 байта)
+            received_crc = struct.unpack_from('<H', received_packet, len(received_packet) - 2)[0]
         else:
-            crc_received = 0
+            received_crc = 0
             
-        packet.extend(struct.pack('<H', crc_received))
+        packet.extend(struct.pack('<H', received_crc))
         
+        logging.info(f"ACK пакет: заголовок=0x02, CRC=0x{received_crc:04X}")
         return bytes(packet)
     
     def process_data(self, parsed_data, client_info):
