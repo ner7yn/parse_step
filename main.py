@@ -4,6 +4,7 @@ import struct
 import crcmod
 from datetime import datetime, timedelta
 import logging
+import binascii
 
 # Настройка логирования
 logging.basicConfig(
@@ -61,6 +62,7 @@ class GalileoskyServer:
                 if not data:
                     break
                     
+                logging.info(f"Получены данные от {client_address}: {binascii.hexlify(data).upper()}")
                 buffer += data
                 buffer = self.process_buffer(buffer, client_socket, client_address, client_info)
                 
@@ -72,16 +74,15 @@ class GalileoskyServer:
     
     def process_buffer(self, buffer, client_socket, client_address, client_info):
         """Обработка буфера данных"""
-        while len(buffer) >= 3:  # Минимальный размер для определения пакета
+        while len(buffer) >= 3:
             header = buffer[0]
             
-            # Определяем тип пакета по заголовку
             if header == 0x01:  # Первый пакет или команда
                 if len(buffer) < 3:
                     break
                     
                 length_bytes = struct.unpack_from('<H', buffer, 1)[0]
-                packet_length = (length_bytes & 0x7FFF) + 5  # +3 байта заголовок+длина, +2 CRC
+                packet_length = (length_bytes & 0x7FFF) + 5
                 
                 if len(buffer) < packet_length:
                     break
@@ -96,25 +97,18 @@ class GalileoskyServer:
                     break
                     
                 length = struct.unpack_from('<H', buffer, 1)[0]
-                packet_length = length + 5  # +3 байта заголовок+длина, +2 CRC
+                packet_length = length + 5
                 
                 if len(buffer) < packet_length:
                     break
                     
-                packet_data = buffer[:packet_length]
+                packet_data = buffer[:packlet_length]
                 buffer = buffer[packet_length:]
                 
                 self.process_compressed_packet(packet_data, client_socket, client_address, client_info)
                 
-            elif header == 0x02:  # Пакет подтверждения (от сервера к терминалу)
-                # Это исходящий пакет, пропускаем
-                if len(buffer) >= 5:
-                    buffer = buffer[5:]
-                else:
-                    break
             else:
-                # Неизвестный заголовок, пропускаем байт
-                logging.warning(f"Неизвестный заголовок: 0x{header:02x}")
+                logging.warning(f"Неизвестный заголовок: 0x{header:02x}, весь буфер: {binascii.hexlify(buffer).upper()}")
                 buffer = buffer[1:]
                 
         return buffer
@@ -124,7 +118,6 @@ class GalileoskyServer:
         try:
             parsed = self.parse_head_packet(data)
             
-            # Логируем информацию о пакете
             logging.info(f"Пакет от {client_address}: "
                         f"Длина={parsed['length']}, "
                         f"CRC={'VALID' if parsed['crc_valid'] else 'INVALID'}")
@@ -137,9 +130,10 @@ class GalileoskyServer:
                 elif tag['tag'] == '0x04' and tag['name'] == 'ID устройства':
                     client_info['device_id'] = tag['value']
             
-            # Отправляем подтверждение
+            # ОБЯЗАТЕЛЬНО отправляем подтверждение ДО обработки данных
             ack_packet = self.create_ack_packet(data)
             client_socket.send(ack_packet)
+            logging.info(f"Отправлено подтверждение: {binascii.hexlify(ack_packet).upper()}")
             
             # Обрабатываем данные
             self.process_data(parsed, client_info)
@@ -147,27 +141,8 @@ class GalileoskyServer:
         except Exception as e:
             logging.error(f"Ошибка обработки пакета: {e}")
     
-    def process_compressed_packet(self, data, client_socket, client_address, client_info):
-        """Обработка сжатого пакета"""
-        try:
-            parsed = self.parse_compressed_packet(data)
-            
-            logging.info(f"Сжатый пакет от {client_address}: "
-                        f"Записей={len(parsed['records'])}")
-            
-            # Отправляем подтверждение
-            ack_packet = self.create_ack_packet(data)
-            client_socket.send(ack_packet)
-            
-            # Обрабатываем данные
-            for record in parsed['records']:
-                self.process_compressed_data(record, client_info)
-                
-        except Exception as e:
-            logging.error(f"Ошибка обработки сжатого пакета: {e}")
-    
     def parse_head_packet(self, data):
-        """Разбор первого пакета (аналогично предыдущей реализации)"""
+        """Разбор первого пакета с улучшенной обработкой тегов"""
         if len(data) < 5:
             raise ValueError("Packet too short")
         
@@ -188,210 +163,163 @@ class GalileoskyServer:
         result['length'] = actual_length
         
         tags = []
-        while index < (3 + actual_length - 2):
-            if index >= len(data):
-                break
-                
+        expected_end = 3 + actual_length - 2  # -2 для CRC
+        
+        while index < expected_end and index < len(data):
             tag = data[index]
             index += 1
             
-            if tag == 0x01:  # Тип терминала
-                tag_data = data[index]
-                index += 1
-                tags.append({'tag': '0x01', 'name': 'Тип терминала', 'value': tag_data})
+            if index >= len(data):
+                break
                 
-            elif tag == 0x02:  # Версия прошивки
-                tag_data = data[index]
-                index += 1
-                tags.append({'tag': '0x02', 'name': 'Версия прошивки', 'value': tag_data})
+            try:
+                if tag == 0x01:  # Тип терминала
+                    if index < len(data):
+                        tag_data = data[index]
+                        index += 1
+                        tags.append({'tag': '0x01', 'name': 'Тип терминала', 'value': tag_data})
                 
-            elif tag == 0x03:  # IMEI
-                imei_bytes = data[index:index+15]
-                imei = imei_bytes.decode('ascii', errors='ignore')
-                index += 15
-                tags.append({'tag': '0x03', 'name': 'IMEI', 'value': imei})
+                elif tag == 0x02:  # Версия прошивки
+                    if index < len(data):
+                        tag_data = data[index]
+                        index += 1
+                        tags.append({'tag': '0x02', 'name': 'Версия прошивки', 'value': tag_data})
                 
-            elif tag == 0x04:  # ID устройства
-                device_id = struct.unpack_from('<H', data, index)[0]
-                index += 2
-                tags.append({'tag': '0x04', 'name': 'ID устройства', 'value': device_id})
+                elif tag == 0x03:  # IMEI
+                    if index + 14 < len(data):
+                        imei_bytes = data[index:index+15]
+                        imei = imei_bytes.decode('ascii', errors='ignore')
+                        index += 15
+                        tags.append({'tag': '0x03', 'name': 'IMEI', 'value': imei})
                 
-            elif tag == 0xFE:  # Расширенные теги
-                ext_tags_length = struct.unpack_from('<H', data, index)[0]
-                index += 2
+                elif tag == 0x04:  # ID устройства
+                    if index + 1 < len(data):
+                        device_id = struct.unpack_from('<H', data, index)[0]
+                        index += 2
+                        tags.append({'tag': '0x04', 'name': 'ID устройства', 'value': device_id})
                 
-                ext_tags = []
-                ext_tags_end = index + ext_tags_length
-                
-                while index < ext_tags_end and index < len(data):
-                    ext_tag = struct.unpack_from('<H', data, index)[0]
-                    index += 2
-                    
-                    if ext_tag == 0x0001:
-                        ext_value = struct.unpack_from('<I', data, index)[0]
+                elif tag == 0xE2:  # Данные пользователя 0
+                    if index + 3 < len(data):
+                        user_data = struct.unpack_from('<I', data, index)[0]
                         index += 4
-                        ext_tags.append({'tag': f'0x{ext_tag:04x}', 'value': ext_value})
-                    else:
-                        if ext_tags_end - index >= 4:
+                        tags.append({'tag': '0xE2', 'name': 'Данные пользователя 0', 'value': user_data})
+                
+                elif tag == 0xA0:  # CAN8BITR15
+                    if index < len(data):
+                        can_data = data[index]
+                        index += 1
+                        tags.append({'tag': '0xA0', 'name': 'CAN8BITR15', 'value': can_data})
+                
+                elif tag == 0x97:  # Неизвестный тег, пропускаем 1 байт
+                    if index < len(data):
+                        tag_data = data[index]
+                        index += 1
+                        tags.append({'tag': '0x97', 'name': 'Неизвестный тег', 'value': tag_data})
+                
+                elif tag == 0xA7:  # Неизвестный тег, пропускаем 1 байт
+                    if index < len(data):
+                        tag_data = data[index]
+                        index += 1
+                        tags.append({'tag': '0xA7', 'name': 'Неизвестный тег', 'value': tag_data})
+                
+                elif tag == 0xE3:  # Данные пользователя 1
+                    if index + 3 < len(data):
+                        user_data = struct.unpack_from('<I', data, index)[0]
+                        index += 4
+                        tags.append({'tag': '0xE3', 'name': 'Данные пользователя 1', 'value': user_data})
+                
+                elif tag == 0xFE:  # Расширенные теги
+                    if index + 1 < len(data):
+                        ext_tags_length = struct.unpack_from('<H', data, index)[0]
+                        index += 2
+                        
+                        ext_tags = []
+                        ext_tags_end = index + ext_tags_length
+                        
+                        while index < ext_tags_end and index < len(data):
+                            if index + 1 < len(data):
+                                ext_tag = struct.unpack_from('<H', data, index)[0]
+                                index += 2
+                                
+                                if ext_tag == 0x0001:
+                                    if index + 3 < len(data):
+                                        ext_value = struct.unpack_from('<I', data, index)[0]
+                                        index += 4
+                                        ext_tags.append({'tag': f'0x{ext_tag:04x}', 'value': ext_value})
+                                else:
+                                    if ext_tags_end - index >= 4:
+                                        index += 4
+                        
+                        tags.append({'tag': '0xFE', 'name': 'Расширенные теги', 'value': ext_tags})
+                
+                else:
+                    # Для неизвестных тегов пытаемся определить длину по типу тега
+                    if tag >= 0x10 and tag <= 0x1F:  # 2-байтные теги
+                        if index + 1 < len(data):
+                            tag_data = struct.unpack_from('<H', data, index)[0]
+                            index += 2
+                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег (2 байта)', 'value': tag_data})
+                    elif tag >= 0x20 and tag <= 0x2F:  # 4-байтные теги  
+                        if index + 3 < len(data):
+                            tag_data = struct.unpack_from('<I', data, index)[0]
                             index += 4
-                
-                tags.append({'tag': '0xFE', 'name': 'Расширенные теги', 'value': ext_tags})
-                
-            else:
-                tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег', 'value': 'Пропущен'})
+                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег (4 байта)', 'value': tag_data})
+                    elif tag >= 0x30 and tag <= 0x3F:  # 1-байтные теги
+                        if index < len(data):
+                            tag_data = data[index]
+                            index += 1
+                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег (1 байт)', 'value': tag_data})
+                    else:
+                        # По умолчанию пропускаем 1 байт
+                        if index < len(data):
+                            tag_data = data[index]
+                            index += 1
+                            tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег', 'value': tag_data})
+                            
+            except Exception as e:
+                logging.error(f"Ошибка разбора тега 0x{tag:02x}: {e}")
+                break
         
         result['tags'] = tags
         
-        received_crc = struct.unpack_from('<H', data, 3 + actual_length)[0]
-        calculated_crc = self.crc16_modbus(data[:3 + actual_length])
-        result['crc_valid'] = (received_crc == calculated_crc)
-        
-        return result
-    
-    def parse_compressed_packet(self, data):
-        """Разбор сжатого пакета"""
-        if len(data) < 5:
-            raise ValueError("Packet too short")
-        
-        result = {}
-        index = 0
-        
-        header = data[index]
-        index += 1
-        
-        length = struct.unpack_from('<H', data, index)[0]
-        index += 2
-        
-        result['header'] = header
-        result['length'] = length
-        
-        records = []
-        
-        while index < (3 + length - 2):
-            record = {}
-            
-            if index + 10 > len(data):
-                break
-                
-            min_data = data[index:index+10]
-            index += 10
-            
-            coord_data = self.parse_minimal_data(min_data)
-            record['minimal_data'] = coord_data
-            
-            records.append(record)
-        
-        result['records'] = records
-        
-        if index + 2 <= len(data):
-            received_crc = struct.unpack_from('<H', data, index)[0]
-            calculated_crc = self.crc16_modbus(data[:3 + length])
+        # Проверка контрольной суммы
+        if 3 + actual_length + 2 <= len(data):
+            received_crc = struct.unpack_from('<H', data, 3 + actual_length)[0]
+            calculated_crc = self.crc16_modbus(data[:3 + actual_length])
             result['crc_valid'] = (received_crc == calculated_crc)
-        
-        return result
-    
-    def parse_minimal_data(self, data):
-        """Разбор минимального набора данных"""
-        if len(data) < 10:
-            return {}
-        
-        result = {}
-        
-        # Время (25 бит)
-        time_bits = int.from_bytes(data[0:4], 'little') & 0x1FFFFFF
-        current_year = datetime.now().year
-        base_time = datetime(current_year, 1, 1)
-        record_time = base_time + timedelta(seconds=time_bits)
-        result['timestamp'] = record_time
-        
-        # Координаты
-        lon_raw = ((data[3] & 0x3F) << 16) | (data[4] << 8) | data[5]
-        longitude = (360 * lon_raw) / 4194304 - 180
-        result['longitude'] = longitude
-        
-        lat_raw = ((data[6] & 0x1F) << 16) | (data[7] << 8) | data[8]
-        latitude = (180 * lat_raw) / 2097152 - 90
-        result['latitude'] = latitude
-        
-        coord_valid = (data[3] & 0x40) == 0
-        result['coordinates_valid'] = coord_valid
-        
-        alarm = (data[8] & 0x02) != 0
-        result['alarm'] = alarm
-        
-        user_tag = ((data[8] & 0x01) << 8) | data[9]
-        result['user_tag'] = user_tag
+            result['received_crc'] = received_crc
+            result['calculated_crc'] = calculated_crc
+        else:
+            result['crc_valid'] = False
         
         return result
     
     def create_ack_packet(self, received_packet):
-        """Создание пакета подтверждения приема"""
+        """Создание пакета подтверждения приема - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         packet = bytearray()
         
         # Заголовок подтверждения
         packet.append(0x02)
         
-        # Контрольная сумма полученного пакета
-        crc_received = self.crc16_modbus(received_packet)
+        # Контрольная сумма полученного пакета (рассчитывается для ВСЕГО пакета)
+        # Включая заголовок, длину и данные, но БЕЗ CRC полученного пакета
+        if len(received_packet) >= 5:
+            # Берем весь пакет кроме последних 2 байт (CRC)
+            data_for_crc = received_packet[:-2] if len(received_packet) > 2 else received_packet
+            crc_received = self.crc16_modbus(data_for_crc)
+        else:
+            crc_received = 0
+            
         packet.extend(struct.pack('<H', crc_received))
-        
-        return bytes(packet)
-    
-    def send_command(self, client_socket, imei, device_id, command_text, command_id=0):
-        """Отправка команды терминалу"""
-        try:
-            command_packet = self.create_command_packet(imei, device_id, command_text, command_id)
-            client_socket.send(command_packet)
-            logging.info(f"Отправлена команда: {command_text}")
-        except Exception as e:
-            logging.error(f"Ошибка отправки команды: {e}")
-    
-    def create_command_packet(self, imei, device_id, command_text, command_id=0):
-        """Создание пакета команды"""
-        packet = bytearray()
-        
-        packet.append(0x01)
-        packet.extend(b'\x00\x00')  # Временная длина
-        
-        packet.append(0x03)
-        packet.extend(imei.encode('ascii'))
-        
-        packet.append(0x04)
-        packet.extend(struct.pack('<H', device_id))
-        
-        packet.append(0xE0)
-        packet.extend(struct.pack('<I', command_id))
-        
-        packet.append(0xE1)
-        command_bytes = command_text.encode('cp1251')
-        packet.append(len(command_bytes))
-        packet.extend(command_bytes)
-        
-        length = len(packet) - 3
-        packet[1:3] = struct.pack('<H', length)
-        
-        crc = self.crc16_modbus(packet)
-        packet.extend(struct.pack('<H', crc))
         
         return bytes(packet)
     
     def process_data(self, parsed_data, client_info):
         """Обработка данных из пакета"""
-        # Здесь можно сохранять данные в БД, отправлять в другие системы и т.д.
         logging.info(f"Обработка данных от IMEI: {client_info.get('imei', 'Unknown')}")
         
         for tag in parsed_data['tags']:
-            logging.info(f"  Тег {tag['tag']}: {tag['value']}")
-    
-    def process_compressed_data(self, record, client_info):
-        """Обработка данных из сжатого пакета"""
-        minimal_data = record.get('minimal_data', {})
-        
-        if minimal_data:
-            logging.info(f"Координаты: {minimal_data.get('latitude'):.6f}, "
-                        f"{minimal_data.get('longitude'):.6f}, "
-                        f"Время: {minimal_data.get('timestamp')}, "
-                        f"Тревога: {minimal_data.get('alarm')}")
+            logging.info(f"  Тег {tag['tag']} ({tag['name']}): {tag['value']}")
     
     def stop(self):
         """Остановка сервера"""
