@@ -16,8 +16,8 @@ class GalileoSKYServer:
         self.host = host
         self.port = port
     
-    def calculate_crc16_galileo(self, data: bytes) -> int:
-        """CRC16 для протокола GalileoSKY"""
+    def calculate_crc16_ccitt(self, data: bytes) -> int:
+        """CRC16-CCITT (используется в GalileoSKY)"""
         crc = 0xFFFF
         for byte in data:
             crc ^= byte << 8
@@ -25,30 +25,58 @@ class GalileoSKYServer:
                 if crc & 0x8000:
                     crc = (crc << 1) ^ 0x1021
                 else:
-                    crc <<= 1
+                    crc = crc << 1
                 crc &= 0xFFFF
         return crc
     
+    def calculate_crc16_modbus(self, data: bytes) -> int:
+        """CRC16 MODBUS"""
+        crc = 0xFFFF
+        for byte in data:
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x0001:
+                    crc = (crc >> 1) ^ 0xA001
+                else:
+                    crc = crc >> 1
+        return crc
+    
+    def calculate_crc16_kermit(self, data: bytes) -> int:
+        """CRC16 Kermit"""
+        crc = 0x0000
+        for byte in data:
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x0001:
+                    crc = (crc >> 1) ^ 0x8408
+                else:
+                    crc >>= 1
+        return crc
+    
     def create_galileosky_response(self, packet_id: int = 0) -> bytes:
-        """Создает КОРРЕКТНЫЙ ответ в формате GalileoSKY"""
-        # Стандартный ответ GalileoSKY
-        response = b'\x00\x01'  # Префикс
-        response += b'\x00\x02'  # Длина пакета
-        response += packet_id.to_bytes(2, 'big')  # ID пакета (из входящего)
-        response += b'\x00'     # Флаги (успех)
+        """Создает ответ и тестирует разные CRC"""
+        # Базовый ответ
+        response_base = b'\x00\x01'  # Префикс
+        response_base += b'\x00\x02'  # Длина пакета
+        response_base += packet_id.to_bytes(2, 'big')  # ID пакета
+        response_base += b'\x00'     # Флаги (успех)
         
-        # Вычисляем CRC (big-endian для GalileoSKY)
-        crc = self.calculate_crc16_galileo(response)
-        response += crc.to_bytes(2, 'big')
+        # Тестируем разные алгоритмы CRC
+        crc_ccitt = self.calculate_crc16_ccitt(response_base)
+        crc_modbus = self.calculate_crc16_modbus(response_base)
+        crc_kermit = self.calculate_crc16_kermit(response_base)
+        
+        logger.info(f"🔢 CRC tests: CCITT={crc_ccitt:04X}, MODBUS={crc_modbus:04X}, Kermit={crc_kermit:04X}")
+        
+        # Пробуем CCITT (самый вероятный для GalileoSKY)
+        response = response_base + crc_ccitt.to_bytes(2, 'big')
         
         return response
     
     def parse_custom_packet(self, data: bytes):
         """Парсим кастомный пакет трекера"""
-        hex_data = binascii.hexlify(data).upper().decode()
-        
         result = {
-            "raw_hex": hex_data,
+            "raw_hex": binascii.hexlify(data).upper().decode(),
             "length": len(data),
             "imei": None,
             "packet_id": 0
@@ -59,13 +87,10 @@ class GalileoSKYServer:
             if b'867994064255157' in data:
                 result["imei"] = "867994064255157"
             
-            # Пытаемся извлечь ID пакета из структуры 01218001...
+            # Извлекаем ID пакета из структуры 01218001...
             if len(data) >= 4:
-                # Первые 4 байта: 01218001
-                # Возможно 8001 - это ID пакета
                 potential_id = struct.unpack('>H', data[2:4])[0]
                 result["packet_id"] = potential_id
-                logger.info(f"🆔 Potential packet ID: {potential_id}")
             
             return result
             
@@ -89,25 +114,25 @@ class GalileoSKYServer:
             if data.startswith(b'\x01\x21'):  # Кастомный протокол трекера
                 logger.info("📋 Protocol: Custom tracker -> converting to GalileoSKY response")
                 packet_info = self.parse_custom_packet(data)
+                logger.info(f"🆔 Packet ID: {packet_info['packet_id']}")
                 
-                # Создаем ПРАВИЛЬНЫЙ ответ GalileoSKY
+                # Создаем ответ
                 response = self.create_galileosky_response(packet_info["packet_id"])
-                logger.info(f"📤 Sending GalileoSKY response: {binascii.hexlify(response).upper().decode()}")
+                logger.info(f"📤 Sending response: {binascii.hexlify(response).upper().decode()}")
                 
             elif data.startswith(b'\x00\x01'):  # Уже GalileoSKY
                 logger.info("📋 Protocol: Native GalileoSKY")
-                # Извлекаем ID пакета
                 packet_id = struct.unpack('>H', data[4:6])[0] if len(data) >= 6 else 0
                 response = self.create_galileosky_response(packet_id)
-                logger.info(f"📤 Sending GalileoSKY response: {binascii.hexlify(response).upper().decode()}")
+                logger.info(f"📤 Sending response: {binascii.hexlify(response).upper().decode()}")
                 
-            else:  # HTTP или неизвестный протокол
-                logger.info("📋 Protocol: HTTP or unknown - sending generic response")
-                response = b'\x01\x00\x01'  # Простой ответ
+            else:
+                logger.info("📋 Protocol: Unknown")
+                response = b'\x01\x00\x01'
             
             # Отправляем ответ
             conn.send(response)
-            logger.info(f"✅ Response sent successfully")
+            logger.info("✅ Response sent")
             
         except Exception as e:
             logger.error(f"💥 Error: {e}")
@@ -124,9 +149,8 @@ class GalileoSKYServer:
                 s.listen(5)
                 
                 logger.info("🚀 " + "="*60)
-                logger.info(f"📍 GalileoSKY Protocol Server started!")
+                logger.info(f"📍 GalileoSKY Server with CRC testing")
                 logger.info(f"📍 Listening on: {self.host}:{self.port}")
-                logger.info("📍 Converts custom protocol to GalileoSKY responses")
                 logger.info("🚀 " + "="*60)
                 
                 while True:
