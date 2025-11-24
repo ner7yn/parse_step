@@ -5,6 +5,7 @@ import crcmod
 from datetime import datetime, timedelta
 import logging
 import binascii
+import json
 
 # Настройка логирования
 logging.basicConfig(
@@ -82,7 +83,7 @@ class GalileoskyServer:
                     break
                     
                 length_bytes = struct.unpack_from('<H', buffer, 1)[0]
-                packet_length = (length_bytes & 0x7FFF) + 5  # +3 байта заголовок+длина, +2 CRC
+                packet_length = (length_bytes & 0x7FFF) + 5
                 
                 logging.info(f"Ожидаемая длина пакета: {packet_length} байт, в буфере: {len(buffer)} байт")
                 
@@ -136,8 +137,12 @@ class GalileoskyServer:
                 elif tag['tag'] == '0x04' and tag['name'] == 'ID устройства':
                     client_info['device_id'] = tag['value']
             
-            # Обрабатываем данные
-            self.process_data(parsed, client_info)
+            # Обрабатываем данные и выводим JSON
+            json_data = self.process_data(parsed, client_info)
+            print("\n" + "="*50)
+            print("JSON ДАННЫЕ:")
+            print(json.dumps(json_data, ensure_ascii=False, indent=2))
+            print("="*50 + "\n")
             
         except Exception as e:
             logging.error(f"Ошибка обработки пакета: {e}")
@@ -164,9 +169,7 @@ class GalileoskyServer:
         result['length'] = actual_length
         
         tags = []
-        expected_end = 3 + actual_length - 2  # -2 для CRC
-        
-        logging.info(f"Разбор пакета: длина={actual_length}, позиция={index}, ожидаемый конец={expected_end}")
+        expected_end = 3 + actual_length - 2
         
         while index < expected_end and index < len(data):
             if index >= len(data):
@@ -174,8 +177,6 @@ class GalileoskyServer:
                 
             tag = data[index]
             index += 1
-            
-            logging.info(f"Обработка тега 0x{tag:02x} на позиции {index-1}")
             
             try:
                 if tag == 0x01:  # Тип терминала (1 байт)
@@ -211,6 +212,111 @@ class GalileoskyServer:
                     else:
                         break
                         
+                elif tag == 0x20:  # Дата и время (4 байта)
+                    if index + 3 < len(data):
+                        timestamp = struct.unpack_from('<I', data, index)[0]
+                        index += 4
+                        dt = datetime(1970, 1, 1) + timedelta(seconds=timestamp)
+                        tags.append({'tag': '0x20', 'name': 'Дата и время', 'value': dt.isoformat()})
+                    else:
+                        break
+
+                elif tag == 0x30:  # Координаты (9 байт)
+                    if index + 8 < len(data):
+                        # Первый байт: количество спутников и валидность
+                        flags = data[index]
+                        index += 1
+                        
+                        satellites = flags & 0x0F
+                        coord_valid = (flags >> 4) & 0x0F
+                        
+                        # Широта (4 байта)
+                        latitude_raw = struct.unpack_from('<i', data, index)[0]
+                        index += 4
+                        latitude = latitude_raw / 1000000.0
+                        
+                        # Долгота (4 байта)
+                        longitude_raw = struct.unpack_from('<i', data, index)[0]
+                        index += 4
+                        longitude = longitude_raw / 1000000.0
+                        
+                        tags.append({
+                            'tag': '0x30', 
+                            'name': 'Координаты', 
+                            'value': {
+                                'latitude': latitude,
+                                'longitude': longitude,
+                                'satellites': satellites,
+                                'valid': coord_valid == 0 or coord_valid == 2
+                            }
+                        })
+                    else:
+                        break
+
+                elif tag == 0x33:  # Скорость и направление (4 байта)
+                    if index + 3 < len(data):
+                        speed_direction = struct.unpack_from('<I', data, index)[0]
+                        index += 4
+                        speed = (speed_direction & 0xFFFF) / 10.0  # км/ч
+                        direction = (speed_direction >> 16) / 10.0  # градусы
+                        tags.append({
+                            'tag': '0x33', 
+                            'name': 'Скорость и направление', 
+                            'value': {
+                                'speed_kmh': speed,
+                                'direction_deg': direction
+                            }
+                        })
+                    else:
+                        break
+
+                elif tag == 0xC0:  # Общий расход топлива (4 байта)
+                    if index + 3 < len(data):
+                        fuel_total = struct.unpack_from('<I', data, index)[0]
+                        index += 4
+                        fuel_total_liters = fuel_total / 2.0  # литры
+                        tags.append({
+                            'tag': '0xC0', 
+                            'name': 'Общий расход топлива', 
+                            'value': fuel_total_liters
+                        })
+                    else:
+                        break
+
+                elif tag == 0xC1:  # Уровень топлива, температура, обороты (4 байта)
+                    if index + 3 < len(data):
+                        can_data = struct.unpack_from('<I', data, index)[0]
+                        index += 4
+                        
+                        fuel_level = (can_data & 0xFF) * 0.4  # %
+                        coolant_temp = ((can_data >> 8) & 0xFF) - 40  # °C
+                        engine_rpm = ((can_data >> 16) & 0xFFFF) * 0.125  # об/мин
+                        
+                        tags.append({
+                            'tag': '0xC1', 
+                            'name': 'CAN данные', 
+                            'value': {
+                                'fuel_level_percent': fuel_level,
+                                'coolant_temp_c': coolant_temp,
+                                'engine_rpm': engine_rpm
+                            }
+                        })
+                    else:
+                        break
+
+                elif tag == 0xDC:  # Уровень топлива в литрах (4 байта)
+                    if index + 3 < len(data):
+                        fuel_liters = struct.unpack_from('<I', data, index)[0]
+                        index += 4
+                        fuel_liters_value = fuel_liters / 10.0  # литры
+                        tags.append({
+                            'tag': '0xDC', 
+                            'name': 'Уровень топлива в литрах', 
+                            'value': fuel_liters_value
+                        })
+                    else:
+                        break
+
                 elif tag == 0xE2:  # Данные пользователя 0 (4 байта)
                     if index + 3 < len(data):
                         user_data = struct.unpack_from('<I', data, index)[0]
@@ -251,32 +357,6 @@ class GalileoskyServer:
                     else:
                         break
                         
-                elif tag == 0xFE:  # Расширенные теги
-                    if index + 1 < len(data):
-                        ext_tags_length = struct.unpack_from('<H', data, index)[0]
-                        index += 2
-                        
-                        ext_tags = []
-                        ext_tags_end = index + ext_tags_length
-                        
-                        while index < ext_tags_end and index < len(data):
-                            if index + 1 < len(data):
-                                ext_tag = struct.unpack_from('<H', data, index)[0]
-                                index += 2
-                                
-                                if ext_tags_end - index >= 4:
-                                    ext_value = struct.unpack_from('<I', data, index)[0]
-                                    index += 4
-                                    ext_tags.append({'tag': f'0x{ext_tag:04x}', 'value': ext_value})
-                                else:
-                                    break
-                            else:
-                                break
-                        
-                        tags.append({'tag': '0xFE', 'name': 'Расширенные теги', 'value': ext_tags})
-                    else:
-                        break
-                        
                 else:
                     # Для неизвестных тегов пропускаем 1 байт по умолчанию
                     if index < len(data):
@@ -295,47 +375,77 @@ class GalileoskyServer:
         # Проверка контрольной суммы
         if 3 + actual_length + 2 <= len(data):
             received_crc = struct.unpack_from('<H', data, 3 + actual_length)[0]
-            # CRC рассчитывается для данных БЕЗ CRC поля
             calculated_crc = self.crc16_modbus(data[:3 + actual_length])
             result['crc_valid'] = (received_crc == calculated_crc)
             result['received_crc'] = received_crc
             result['calculated_crc'] = calculated_crc
-            
-            logging.info(f"CRC проверка: получено=0x{received_crc:04X}, вычислено=0x{calculated_crc:04X}, valid={result['crc_valid']}")
         else:
             result['crc_valid'] = False
-            logging.warning("Недостаточно данных для проверки CRC")
         
         return result
     
     def create_ack_packet(self, received_packet):
-        """
-        Создание пакета подтверждения приема
-        ВАЖНО: В поле контрольной суммы отправляется CRC полученного пакета
-        """
+        """Создание пакета подтверждения приема"""
         packet = bytearray()
         
         # Заголовок подтверждения
         packet.append(0x02)
         
-        # Контрольная сумма полученного пакета (берется ИЗ полученного пакета)
+        # Контрольная сумма полученного пакета
         if len(received_packet) >= 5:
-            # Получаем CRC из полученного пакета (последние 2 байта)
             received_crc = struct.unpack_from('<H', received_packet, len(received_packet) - 2)[0]
         else:
             received_crc = 0
             
         packet.extend(struct.pack('<H', received_crc))
         
-        logging.info(f"ACK пакет: заголовок=0x02, CRC=0x{received_crc:04X}")
         return bytes(packet)
     
     def process_data(self, parsed_data, client_info):
-        """Обработка данных из пакета"""
-        logging.info(f"Обработка данных от IMEI: {client_info.get('imei', 'Unknown')}")
+        """Обработка данных из пакета и формирование JSON"""
+        json_data = {
+            'imei': client_info.get('imei', 'Unknown'),
+            'device_id': client_info.get('device_id'),
+            'timestamp': datetime.now().isoformat(),
+            'crc_valid': parsed_data.get('crc_valid', False),
+            'data': {}
+        }
         
+        # Извлекаем нужные данные из тегов
         for tag in parsed_data['tags']:
-            logging.info(f"  Тег {tag['tag']} ({tag['name']}): {tag['value']}")
+            tag_value = tag['value']
+            
+            if tag['tag'] == '0x30':  # Координаты
+                if isinstance(tag_value, dict):
+                    json_data['data']['latitude'] = tag_value.get('latitude')
+                    json_data['data']['longitude'] = tag_value.get('longitude')
+                    json_data['data']['coordinates_valid'] = tag_value.get('valid')
+                    json_data['data']['satellites'] = tag_value.get('satellites')
+                    
+            elif tag['tag'] == '0xC0':  # Общий расход топлива
+                json_data['data']['total_fuel_consumption_l'] = tag_value
+                
+            elif tag['tag'] == '0xC1':  # CAN данные (уровень топлива в %)
+                if isinstance(tag_value, dict):
+                    json_data['data']['fuel_level_percent'] = tag_value.get('fuel_level_percent')
+                    json_data['data']['coolant_temperature'] = tag_value.get('coolant_temp_c')
+                    json_data['data']['engine_rpm'] = tag_value.get('engine_rpm')
+                    
+            elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
+                json_data['data']['fuel_level_l'] = tag_value
+                
+            elif tag['tag'] == '0x33':  # Скорость и направление
+                if isinstance(tag_value, dict):
+                    json_data['data']['speed_kmh'] = tag_value.get('speed_kmh')
+                    json_data['data']['direction_deg'] = tag_value.get('direction_deg')
+                    
+            elif tag['tag'] == '0x20':  # Время
+                json_data['data']['gps_time'] = tag_value
+        
+        # Логируем обработанные данные
+        logging.info(f"Обработка данных от IMEI: {json_data['imei']}")
+        
+        return json_data
     
     def stop(self):
         """Остановка сервера"""
