@@ -407,7 +407,6 @@ class GalileoskyServer:
             'imei': client_info.get('imei', 'Unknown'),
             'device_id': client_info.get('device_id'),
             'timestamp': datetime.now().isoformat(),
-            'crc_valid': parsed_data.get('crc_valid', False),
             'data': {}
         }
         
@@ -420,7 +419,6 @@ class GalileoskyServer:
                     json_data['data']['latitude'] = tag_value.get('latitude')
                     json_data['data']['longitude'] = tag_value.get('longitude')
                     json_data['data']['coordinates_valid'] = tag_value.get('valid')
-                    json_data['data']['satellites'] = tag_value.get('satellites')
                     
             elif tag['tag'] == '0xC0':  # Общий расход топлива
                 json_data['data']['total_fuel_consumption_l'] = tag_value
@@ -430,14 +428,9 @@ class GalileoskyServer:
                     json_data['data']['fuel_level_percent'] = tag_value.get('fuel_level_percent')
                     json_data['data']['coolant_temperature'] = tag_value.get('coolant_temp_c')
                     json_data['data']['engine_rpm'] = tag_value.get('engine_rpm')
-                    
             elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
                 json_data['data']['fuel_level_l'] = tag_value
                 
-            elif tag['tag'] == '0x33':  # Скорость и направление
-                if isinstance(tag_value, dict):
-                    json_data['data']['speed_kmh'] = tag_value.get('speed_kmh')
-                    json_data['data']['direction_deg'] = tag_value.get('direction_deg')
                     
             elif tag['tag'] == '0x20':  # Время
                 json_data['data']['gps_time'] = tag_value
