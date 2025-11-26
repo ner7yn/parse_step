@@ -151,7 +151,6 @@ class GalileoskyServer:
         """Разбор первого пакета"""
         if len(data) < 5:
             raise ValueError("Packet too short")
-        
         result = {}
         index = 0
         
@@ -442,7 +441,7 @@ class GalileoskyServer:
 
             elif tag['tag'] == '0xE3':  # Пользовательский тег 1 (объём/счётчик)
                 # Сохраняем объём топлива (предполагаем, что это литры)
-                json_data['transaction']['fuel_volume_l'] = tag_value
+                json_data['transaction']['fuel_volume_l'] = tag_value / 100
                 logging.info(f"Обнаружен объём топлива: {tag_value} л")
 
         # Логируем обработанные данные
