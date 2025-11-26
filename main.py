@@ -139,10 +139,10 @@ class GalileoskyServer:
             
             # Обрабатываем данные и выводим JSON
             json_data = self.process_data(parsed, client_info)
-            logging.info("\n" + "="*50)
-            logging.info("JSON ДАННЫЕ:")
+            logging.info(f"\n" + "="*50)
+            logging.info(f"JSON ДАННЫЕ:")
             logging.info(json.dumps(json_data, ensure_ascii=False, indent=2))
-            logging.info("="*50 + "\n")
+            logging.info(f"="*50 + "\n")
             
         except Exception as e:
             logging.error(f"Ошибка обработки пакета: {e}")
