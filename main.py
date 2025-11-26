@@ -402,42 +402,52 @@ class GalileoskyServer:
         return bytes(packet)
     
     def process_data(self, parsed_data, client_info):
-        """Обработка данных из пакета и формирование JSON"""
+        """Обработка данных из пакета и формирование JSON для транзакции"""
         json_data = {
             'imei': client_info.get('imei', 'Unknown'),
             'device_id': client_info.get('device_id'),
             'timestamp': datetime.now().isoformat(),
-            'data': {}
+            'transaction': {} # Изменим структуру на 'transaction'
         }
-        
+
         # Извлекаем нужные данные из тегов
         for tag in parsed_data['tags']:
             tag_value = tag['value']
-            
+
             if tag['tag'] == '0x30':  # Координаты
                 if isinstance(tag_value, dict):
-                    json_data['data']['latitude'] = tag_value.get('latitude')
-                    json_data['data']['longitude'] = tag_value.get('longitude')
-                    json_data['data']['coordinates_valid'] = tag_value.get('valid')
-                    
+                    json_data['transaction']['latitude'] = tag_value.get('latitude')
+                    json_data['transaction']['longitude'] = tag_value.get('longitude')
+                    json_data['transaction']['coordinates_valid'] = tag_value.get('valid')
+
             elif tag['tag'] == '0xC0':  # Общий расход топлива
-                json_data['data']['total_fuel_consumption_l'] = tag_value
-                
+                json_data['transaction']['total_fuel_consumption_l'] = tag_value
+
             elif tag['tag'] == '0xC1':  # CAN данные (уровень топлива в %)
                 if isinstance(tag_value, dict):
-                    json_data['data']['fuel_level_percent'] = tag_value.get('fuel_level_percent')
-                    json_data['data']['coolant_temperature'] = tag_value.get('coolant_temp_c')
-                    json_data['data']['engine_rpm'] = tag_value.get('engine_rpm')
+                    json_data['transaction']['fuel_level_percent'] = tag_value.get('fuel_level_percent')
+                    json_data['transaction']['coolant_temperature'] = tag_value.get('coolant_temp_c')
+                    json_data['transaction']['engine_rpm'] = tag_value.get('engine_rpm')
+
             elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
-                json_data['data']['fuel_level_l'] = tag_value
-                
-                    
+                json_data['transaction']['fuel_level_l'] = tag_value
+
             elif tag['tag'] == '0x20':  # Время
-                json_data['data']['gps_time'] = tag_value
-        
+                json_data['transaction']['gps_time'] = tag_value
+
+            elif tag['tag'] == '0xE2':  # Пользовательский тег 0 (ID ключа)
+                # Сохраняем ID пользователя
+                json_data['transaction']['user_id'] = tag_value
+                logging.info(f"Обнаружен пользователь: {tag_value}")
+
+            elif tag['tag'] == '0xE3':  # Пользовательский тег 1 (объём/счётчик)
+                # Сохраняем объём топлива (предполагаем, что это литры)
+                json_data['transaction']['fuel_volume_l'] = tag_value
+                logging.info(f"Обнаружен объём топлива: {tag_value} л")
+
         # Логируем обработанные данные
         logging.info(f"Обработка данных от IMEI: {json_data['imei']}")
-        
+
         return json_data
     
     def stop(self):
