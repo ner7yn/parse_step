@@ -441,8 +441,13 @@ class GalileoskyServer:
 
             elif tag['tag'] == '0xE3':  # Пользовательский тег 1 (объём/счётчик)
                 # Сохраняем объём топлива (предполагаем, что это литры)
-                json_data['transaction']['fuel_volume_l'] = tag_value / 100
+                json_data['transaction']['fuel_volume_l'] = tag_value / 400
                 logging.info(f"Обнаружен объём топлива: {tag_value} л")
+                
+            elif tag['tag'] == '0xA1':  # CAN32BIT1 - Топливо, л (как указано в конфигураторе)
+                # Это и есть ваш реальный объём заправки!
+                json_data['transaction']['fuel_volume_l'] = tag_value / 100.0  # Преобразуем в литры
+                logging.info(f"Обнаружен объём топлива из CAN32BIT1: {tag_value} л")
 
         # Логируем обработанные данные
         logging.info(f"Обработка данных от IMEI: {json_data['imei']}")
