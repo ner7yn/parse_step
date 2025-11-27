@@ -4,7 +4,6 @@ import struct
 import crcmod
 from datetime import datetime, timedelta
 import logging
-import binascii
 import json
 
 # Настройка логирования
@@ -63,7 +62,6 @@ class GalileoskyServer:
                 if not data:
                     break
                     
-                logging.info(f"Получены сырые данные: {binascii.hexlify(data).upper().decode()}")
                 buffer += data
                 buffer = self.process_buffer(buffer, client_socket, client_address, client_info)
                 
@@ -122,7 +120,6 @@ class GalileoskyServer:
             # СРАЗУ отправляем подтверждение
             ack_packet = self.create_ack_packet(data)
             client_socket.send(ack_packet)
-            logging.info(f"Отправлено подтверждение: {binascii.hexlify(ack_packet).upper().decode()}")
             
             # Затем разбираем пакет
             parsed = self.parse_head_packet(data)
@@ -133,7 +130,6 @@ class GalileoskyServer:
             for tag in parsed['tags']:
                 if tag['tag'] == '0x03' and tag['name'] == 'IMEI':
                     client_info['imei'] = tag['value']
-                    logging.info(f"IMEI устройства: {tag['value']}")
                 elif tag['tag'] == '0x04' and tag['name'] == 'ID устройства':
                     client_info['device_id'] = tag['value']
             
@@ -252,22 +248,6 @@ class GalileoskyServer:
                     else:
                         break
 
-                elif tag == 0x33:  # Скорость и направление (4 байта)
-                    if index + 3 < len(data):
-                        speed_direction = struct.unpack_from('<I', data, index)[0]
-                        index += 4
-                        speed = (speed_direction & 0xFFFF) / 10.0  # км/ч
-                        direction = (speed_direction >> 16) / 10.0  # градусы
-                        tags.append({
-                            'tag': '0x33', 
-                            'name': 'Скорость и направление', 
-                            'value': {
-                                'speed_kmh': speed,
-                                'direction_deg': direction
-                            }
-                        })
-                    else:
-                        break
 
                 elif tag == 0xC0:  # Общий расход топлива (4 байта)
                     if index + 3 < len(data):
@@ -428,8 +408,8 @@ class GalileoskyServer:
                     json_data['transaction']['coolant_temperature'] = tag_value.get('coolant_temp_c')
                     json_data['transaction']['engine_rpm'] = tag_value.get('engine_rpm')
 
-            elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
-                json_data['transaction']['fuel_level_l'] = tag_value
+            # elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
+            #     json_data['transaction']['fuel_level_l'] = tag_value
 
             elif tag['tag'] == '0x20':  # Время
                 json_data['transaction']['gps_time'] = tag_value
@@ -437,17 +417,14 @@ class GalileoskyServer:
             elif tag['tag'] == '0xE2':  # Пользовательский тег 0 (ID ключа)
                 # Сохраняем ID пользователя
                 json_data['transaction']['user_id'] = tag_value
-                logging.info(f"Обнаружен пользователь: {tag_value}")
 
             elif tag['tag'] == '0xE3':  # Пользовательский тег 1 (объём/счётчик)
                 # Сохраняем объём топлива (предполагаем, что это литры)
                 json_data['transaction']['fuel_volume_l'] = tag_value / 400
-                logging.info(f"Обнаружен объём топлива: {tag_value} л")
                 
-            elif tag['tag'] == '0xA1':  # CAN32BIT1 - Топливо, л (как указано в конфигураторе)
-                # Это и есть ваш реальный объём заправки!
-                json_data['transaction']['fuel_volume_l'] = tag_value / 100.0  # Преобразуем в литры
-                logging.info(f"Обнаружен объём топлива из CAN32BIT1: {tag_value} л")
+            # elif tag['tag'] == '0xA1':  # CAN32BIT1 - Топливо, л (как указано в конфигураторе)
+            #     # Это и есть ваш реальный объём заправки!
+            #     json_data['transaction']['fuel_volume_l'] = tag_value / 100.0  # Преобразуем в литры
 
         # Логируем обработанные данные
         logging.info(f"Обработка данных от IMEI: {json_data['imei']}")
