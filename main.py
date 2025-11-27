@@ -212,7 +212,15 @@ class GalileoskyServer:
                         timestamp = struct.unpack_from('<I', data, index)[0]
                         index += 4
                         dt = datetime(1970, 1, 1) + timedelta(seconds=timestamp)
-                        tags.append({'tag': '0x20', 'name': 'Дата и время', 'value': dt.isoformat()})
+                        # Форматируем время в читаемый вид
+                        formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        tags.append({
+                            'tag': '0x20', 
+                            'name': 'Дата и время', 
+                            'value': formatted_time,
+                            'timestamp': timestamp,  # Сохраняем также timestamp
+                            'datetime_iso': dt.isoformat()  # И ISO формат
+                        })
                     else:
                         break
 
