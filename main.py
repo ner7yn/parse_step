@@ -212,35 +212,14 @@ class GalileoskyServer:
                         timestamp = struct.unpack_from('<I', data, index)[0]
                         index += 4
                         dt = datetime(1970, 1, 1) + timedelta(seconds=timestamp)
-                        # Сохраняем время в разных форматах
+                        # Форматируем время в читаемый вид
                         formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
-                        iso_time = dt.isoformat()
-                        unix_timestamp = timestamp
-                        
                         tags.append({
                             'tag': '0x20', 
                             'name': 'Дата и время', 
-                            'value': {
-                                'formatted': formatted_time,
-                                'iso': iso_time,
-                                'unix': unix_timestamp,
-                                'raw_bytes': data[index-4:index].hex()
-                            }
-                        })
-                    else:
-                        break
-
-                elif tag == 0x21:  # Миллисекунды (2 байта)
-                    if index + 1 < len(data):
-                        milliseconds = struct.unpack_from('<H', data, index)[0]
-                        index += 2
-                        tags.append({
-                            'tag': '0x21', 
-                            'name': 'Миллисекунды', 
-                            'value': {
-                                'milliseconds': milliseconds,
-                                'raw_bytes': data[index-2:index].hex()
-                            }
+                            'value': formatted_time,
+                            'timestamp': timestamp,  # Сохраняем также timestamp
+                            'datetime_iso': dt.isoformat()  # И ISO формат
                         })
                     else:
                         break
@@ -271,12 +250,12 @@ class GalileoskyServer:
                                 'latitude': latitude,
                                 'longitude': longitude,
                                 'satellites': satellites,
-                                'valid': coord_valid == 0 or coord_valid == 2,
-                                'raw_bytes': data[index-9:index].hex()
+                                'valid': coord_valid == 0 or coord_valid == 2
                             }
                         })
                     else:
                         break
+
 
                 elif tag == 0xC0:  # Общий расход топлива (4 байта)
                     if index + 3 < len(data):
@@ -286,13 +265,12 @@ class GalileoskyServer:
                         tags.append({
                             'tag': '0xC0', 
                             'name': 'Общий расход топлива', 
-                            'value': {
-                                'liters': fuel_total_liters,
-                                'raw_bytes': data[index-4:index].hex()
-                            }
+                            'value': fuel_total_liters
                         })
                     else:
                         break
+
+                
 
                 elif tag == 0xDC:  # Уровень топлива в литрах (4 байта)
                     if index + 3 < len(data):
@@ -302,10 +280,7 @@ class GalileoskyServer:
                         tags.append({
                             'tag': '0xDC', 
                             'name': 'Уровень топлива в литрах', 
-                            'value': {
-                                'liters': fuel_liters_value,
-                                'raw_bytes': data[index-4:index].hex()
-                            }
+                            'value': fuel_liters_value
                         })
                     else:
                         break
@@ -314,29 +289,16 @@ class GalileoskyServer:
                     if index + 3 < len(data):
                         user_data = struct.unpack_from('<I', data, index)[0]
                         index += 4
-                        tags.append({
-                            'tag': '0xE2', 
-                            'name': 'Данные пользователя 0', 
-                            'value': {
-                                'data': user_data,
-                                'raw_bytes': data[index-4:index].hex()
-                            }
-                        })
+                        tags.append({'tag': '0xE2', 'name': 'Данные пользователя 0', 'value': user_data})
                     else:
                         break
+                        
                         
                 elif tag == 0x97:  # Неизвестный тег (1 байт)
                     if index < len(data):
                         tag_data = data[index]
                         index += 1
-                        tags.append({
-                            'tag': '0x97', 
-                            'name': 'Неизвестный тег 0x97', 
-                            'value': {
-                                'data': tag_data,
-                                'raw_bytes': f'{tag_data:02x}'
-                            }
-                        })
+                        tags.append({'tag': '0x97', 'name': 'Неизвестный тег 0x97', 'value': tag_data})
                     else:
                         break
                         
@@ -344,14 +306,7 @@ class GalileoskyServer:
                     if index < len(data):
                         tag_data = data[index]
                         index += 1
-                        tags.append({
-                            'tag': '0xA7', 
-                            'name': 'Неизвестный тег 0xA7', 
-                            'value': {
-                                'data': tag_data,
-                                'raw_bytes': f'{tag_data:02x}'
-                            }
-                        })
+                        tags.append({'tag': '0xA7', 'name': 'Неизвестный тег 0xA7', 'value': tag_data})
                     else:
                         break
                         
@@ -359,44 +314,7 @@ class GalileoskyServer:
                     if index + 3 < len(data):
                         user_data = struct.unpack_from('<I', data, index)[0]
                         index += 4
-                        tags.append({
-                            'tag': '0xE3', 
-                            'name': 'Данные пользователя 1', 
-                            'value': {
-                                'data': user_data,
-                                'raw_bytes': data[index-4:index].hex()
-                            }
-                        })
-                    else:
-                        break
-
-                elif tag == 0x10:  # Номер записи в архиве (2 байта)
-                    if index + 1 < len(data):
-                        record_number = struct.unpack_from('<H', data, index)[0]
-                        index += 2
-                        tags.append({
-                            'tag': '0x10', 
-                            'name': 'Номер записи в архиве', 
-                            'value': {
-                                'record_number': record_number,
-                                'raw_bytes': data[index-2:index].hex()
-                            }
-                        })
-                    else:
-                        break
-
-                elif tag == 0x11:  # Номер текущей записи в архиве (4 байта)
-                    if index + 3 < len(data):
-                        current_record = struct.unpack_from('<I', data, index)[0]
-                        index += 4
-                        tags.append({
-                            'tag': '0x11', 
-                            'name': 'Номер текущей записи в архиве', 
-                            'value': {
-                                'current_record': current_record,
-                                'raw_bytes': data[index-4:index].hex()
-                            }
-                        })
+                        tags.append({'tag': '0xE3', 'name': 'Данные пользователя 1', 'value': user_data})
                     else:
                         break
                         
@@ -405,14 +323,7 @@ class GalileoskyServer:
                     if index < len(data):
                         tag_data = data[index]
                         index += 1
-                        tags.append({
-                            'tag': f'0x{tag:02x}', 
-                            'name': 'Неизвестный тег', 
-                            'value': {
-                                'data': tag_data,
-                                'raw_bytes': f'{tag_data:02x}'
-                            }
-                        })
+                        tags.append({'tag': f'0x{tag:02x}', 'name': 'Неизвестный тег', 'value': tag_data})
                     else:
                         break
                         
@@ -453,123 +364,45 @@ class GalileoskyServer:
     
     def process_data(self, parsed_data, client_info):
         """Обработка данных из пакета и формирование JSON для транзакции"""
-        # Собираем все временные метки
-        timestamps = {
-            'server_received': datetime.now().isoformat(),
-            'server_unix': datetime.now().timestamp()
-        }
-        
         json_data = {
             'imei': client_info.get('imei', 'Unknown'),
             'device_id': client_info.get('device_id'),
-            'timestamps': timestamps,
-            'transaction': {},
-            'raw_data': {}
+            'timestamp': datetime.now().isoformat(),
+            'transaction': {} # Изменим структуру на 'transaction'
         }
 
-        # Извлекаем все данные из тегов
+        # Извлекаем нужные данные из тегов
         for tag in parsed_data['tags']:
             tag_value = tag['value']
-            tag_name = tag['name']
-            tag_hex = tag['tag']
 
-            # Сохраняем сырые данные
-            json_data['raw_data'][tag_hex] = {
-                'name': tag_name,
-                'value': tag_value
-            }
-
-            # Обработка временных меток
-            if tag['tag'] == '0x20':  # Основное время GPS
+            if tag['tag'] == '0x30':  # Координаты
                 if isinstance(tag_value, dict):
-                    json_data['timestamps']['gps_main'] = tag_value.get('formatted')
-                    json_data['timestamps']['gps_iso'] = tag_value.get('iso')
-                    json_data['timestamps']['gps_unix'] = tag_value.get('unix')
-                    json_data['transaction']['gps_time'] = tag_value.get('formatted')
+                    json_data['transaction']['latitude'] = tag_value.get('latitude')
+                    json_data['transaction']['longitude'] = tag_value.get('longitude')
+                    json_data['transaction']['coordinates_valid'] = tag_value.get('valid')
 
-            elif tag['tag'] == '0x21':  # Миллисекунды
-                if isinstance(tag_value, dict):
-                    json_data['timestamps']['milliseconds'] = tag_value.get('milliseconds')
-                    # Комбинируем время GPS и миллисекунды если есть оба
-                    if 'gps_unix' in json_data['timestamps']:
-                        gps_time = datetime.fromtimestamp(json_data['timestamps']['gps_unix'])
-                        precise_time = gps_time.replace(microsecond=tag_value.get('milliseconds', 0) * 1000)
-                        json_data['timestamps']['gps_precise'] = precise_time.isoformat()
+            # elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
+            #     json_data['transaction']['fuel_level_l'] = tag_value
 
-            # Обработка координат
-            elif tag['tag'] == '0x30':
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['coordinates'] = {
-                        'latitude': tag_value.get('latitude'),
-                        'longitude': tag_value.get('longitude'),
-                        'valid': tag_value.get('valid'),
-                        'satellites': tag_value.get('satellites')
-                    }
+            elif tag['tag'] == '0x20':  # Время
+                json_data['transaction']['gps_time'] = tag_value
 
-            # Обработка топлива
-            elif tag['tag'] == '0xC0':
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['total_fuel_consumption_l'] = tag_value.get('liters')
+            elif tag['tag'] == '0xE2':  # Пользовательский тег 0 (ID ключа)
+                # Сохраняем ID пользователя
+                json_data['transaction']['user_id'] = tag_value
 
-            elif tag['tag'] == '0xDC':
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['current_fuel_level_l'] = tag_value.get('liters')
+            elif tag['tag'] == '0xE3':  # Пользовательский тег 1 (объём/счётчик)
+                # Сохраняем объём топлива (предполагаем, что это литры)
+                json_data['transaction']['fuel_volume_l'] = tag_value / 400
+                
+            # elif tag['tag'] == '0xA1':  # CAN32BIT1 - Топливо, л (как указано в конфигураторе)
+            #     # Это и есть ваш реальный объём заправки!
+            #     json_data['transaction']['fuel_volume_l'] = tag_value / 100.0  # Преобразуем в литры
 
-            # Обработка пользовательских данных
-            elif tag['tag'] == '0xE2':
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['user_data_0'] = tag_value.get('data')
-
-            elif tag['tag'] == '0xE3':
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['user_data_1'] = tag_value.get('data')
-                    json_data['transaction']['calculated_fuel_volume_l'] = tag_value.get('data', 0) / 400
-
-            # Обработка архивных записей
-            elif tag['tag'] == '0x10':
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['archive_record_number'] = tag_value.get('record_number')
-
-            elif tag['tag'] == '0x11':
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['current_archive_record'] = tag_value.get('current_record')
-
-        # Логируем информацию о времени
-        time_info = []
-        for time_key, time_value in json_data['timestamps'].items():
-            time_info.append(f"{time_key}: {time_value}")
-        
-        logging.info(f"ВРЕМЕННЫЕ МЕТКИ: {', '.join(time_info)}")
+        # Логируем обработанные данные
         logging.info(f"Обработка данных от IMEI: {json_data['imei']}")
 
         return json_data
-
-    def process_compressed_packet(self, data, client_socket, client_address, client_info):
-        """Обработка сжатого пакета"""
-        try:
-            # Отправляем подтверждение
-            ack_packet = self.create_ack_packet(data)
-            client_socket.send(ack_packet)
-            
-            logging.info(f"Сжатый пакет от {client_address}, длина: {len(data)} байт")
-            
-            # Базовая обработка сжатого пакета
-            json_data = {
-                'imei': client_info.get('imei', 'Unknown'),
-                'device_id': client_info.get('device_id'),
-                'packet_type': 'compressed',
-                'timestamps': {
-                    'server_received': datetime.now().isoformat()
-                },
-                'data_length': len(data),
-                'raw_hex': data.hex()
-            }
-            
-            logging.info(f"СЖАТЫЙ ПАКЕТ:")
-            logging.info(json.dumps(json_data, ensure_ascii=False, indent=2))
-            
-        except Exception as e:
-            logging.error(f"Ошибка обработки сжатого пакета: {e}")
     
     def stop(self):
         """Остановка сервера"""
