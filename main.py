@@ -365,9 +365,7 @@ class GalileoskyServer:
     def process_data(self, parsed_data, client_info):
         """Обработка данных из пакета и формирование JSON для транзакции"""
         json_data = {
-            'imei': client_info.get('imei', 'Unknown'),
             'device_id': client_info.get('device_id'),
-            'timestamp': datetime.now().isoformat(),
             'transaction': {} # Изменим структуру на 'transaction'
         }
 
@@ -395,11 +393,6 @@ class GalileoskyServer:
                 # Сохраняем объём топлива (предполагаем, что это литры)
                 json_data['transaction']['fuel_volume_l'] = tag_value / 400
                 
-            # elif tag['tag'] == '0xA1':  # CAN32BIT1 - Топливо, л (как указано в конфигураторе)
-            #     # Это и есть ваш реальный объём заправки!
-            #     json_data['transaction']['fuel_volume_l'] = tag_value / 100.0  # Преобразуем в литры
-
-        # Логируем обработанные данные
         logging.info(f"Обработка данных от IMEI: {json_data['imei']}")
 
         return json_data
