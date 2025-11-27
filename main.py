@@ -128,7 +128,9 @@ class GalileoskyServer:
             
             # Извлекаем IMEI и ID устройства
             for tag in parsed['tags']:
-                if tag['tag'] == '0x04' and tag['name'] == 'ID устройства':
+                if tag['tag'] == '0x03' and tag['name'] == 'IMEI':
+                    client_info['imei'] = tag['value']
+                elif tag['tag'] == '0x04' and tag['name'] == 'ID устройства':
                     client_info['device_id'] = tag['value']
             
             # Обрабатываем данные и выводим JSON
@@ -172,8 +174,32 @@ class GalileoskyServer:
             index += 1
             
             try:
-                           
-                if tag == 0x04:  # ID устройства (2 байта)
+                if tag == 0x01:  # Тип терминала (1 байт)
+                    if index < len(data):
+                        tag_data = data[index]
+                        index += 1
+                        tags.append({'tag': '0x01', 'name': 'Тип терминала', 'value': tag_data})
+                    else:
+                        break
+                        
+                elif tag == 0x02:  # Версия прошивки (1 байт)
+                    if index < len(data):
+                        tag_data = data[index]
+                        index += 1
+                        tags.append({'tag': '0x02', 'name': 'Версия прошивки', 'value': tag_data})
+                    else:
+                        break
+                        
+                elif tag == 0x03:  # IMEI (15 байт)
+                    if index + 14 < len(data):
+                        imei_bytes = data[index:index+15]
+                        imei = imei_bytes.decode('ascii', errors='ignore')
+                        index += 15
+                        tags.append({'tag': '0x03', 'name': 'IMEI', 'value': imei})
+                    else:
+                        break
+                        
+                elif tag == 0x04:  # ID устройства (2 байта)
                     if index + 1 < len(data):
                         device_id = struct.unpack_from('<H', data, index)[0]
                         index += 2
