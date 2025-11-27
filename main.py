@@ -234,21 +234,21 @@ class GalileoskyServer:
                         coord_valid = (flags >> 4) & 0x0F
                         
                         # Широта (4 байта)
-                        latitude_raw = struct.unpack_from('<i', data, index)[0]
+                        lat_raw = struct.unpack_from('<i', data, index)[0]
                         index += 4
-                        latitude = latitude_raw / 1000000.0
+                        lat = lat_raw / 1000000.0
                         
                         # Долгота (4 байта)
-                        longitude_raw = struct.unpack_from('<i', data, index)[0]
+                        lon_raw = struct.unpack_from('<i', data, index)[0]
                         index += 4
-                        longitude = longitude_raw / 1000000.0
+                        lon = lon_raw / 1000000.0
                         
                         tags.append({
                             'tag': '0x30', 
                             'name': 'Координаты', 
                             'value': {
-                                'latitude': latitude,
-                                'longitude': longitude,
+                                'lat': lat,
+                                'lon': lon,
                                 'satellites': satellites,
                                 'valid': coord_valid == 0 or coord_valid == 2
                             }
@@ -365,6 +365,7 @@ class GalileoskyServer:
     def process_data(self, parsed_data, client_info):
         """Обработка данных из пакета и формирование JSON для транзакции"""
         json_data = {
+            'imei': client_info.get('imei', 'Unknown'),
             'device_id': client_info.get('device_id'),
             'transaction': {} # Изменим структуру на 'transaction'
         }
@@ -375,19 +376,19 @@ class GalileoskyServer:
 
             if tag['tag'] == '0x30':  # Координаты
                 if isinstance(tag_value, dict):
-                    json_data['transaction']['latitude'] = tag_value.get('latitude')
-                    json_data['transaction']['longitude'] = tag_value.get('longitude')
+                    json_data['transaction']['lat'] = tag_value.get('lat')
+                    json_data['transaction']['lon'] = tag_value.get('lon')
                     json_data['transaction']['coordinates_valid'] = tag_value.get('valid')
 
             # elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
             #     json_data['transaction']['fuel_level_l'] = tag_value
 
             elif tag['tag'] == '0x20':  # Время
-                json_data['transaction']['gps_time'] = tag_value
+                json_data['transaction']['time'] = tag_value
 
             elif tag['tag'] == '0xE2':  # Пользовательский тег 0 (ID ключа)
                 # Сохраняем ID пользователя
-                json_data['transaction']['user_id'] = tag_value
+                json_data['transaction']['card_number'] = tag_value
 
             elif tag['tag'] == '0xE3':  # Пользовательский тег 1 (объём/счётчик)
                 # Сохраняем объём топлива (предполагаем, что это литры)
