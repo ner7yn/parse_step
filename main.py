@@ -262,26 +262,7 @@ class GalileoskyServer:
                     else:
                         break
 
-                elif tag == 0xC1:  # Уровень топлива, температура, обороты (4 байта)
-                    if index + 3 < len(data):
-                        can_data = struct.unpack_from('<I', data, index)[0]
-                        index += 4
-                        
-                        fuel_level = (can_data & 0xFF) * 0.4  # %
-                        coolant_temp = ((can_data >> 8) & 0xFF) - 40  # °C
-                        engine_rpm = ((can_data >> 16) & 0xFFFF) * 0.125  # об/мин
-                        
-                        tags.append({
-                            'tag': '0xC1', 
-                            'name': 'CAN данные', 
-                            'value': {
-                                'fuel_level_percent': fuel_level,
-                                'coolant_temp_c': coolant_temp,
-                                'engine_rpm': engine_rpm
-                            }
-                        })
-                    else:
-                        break
+                
 
                 elif tag == 0xDC:  # Уровень топлива в литрах (4 байта)
                     if index + 3 < len(data):
@@ -304,13 +285,6 @@ class GalileoskyServer:
                     else:
                         break
                         
-                elif tag == 0xA0:  # CAN8BITR15 (1 байт)
-                    if index < len(data):
-                        can_data = data[index]
-                        index += 1
-                        tags.append({'tag': '0xA0', 'name': 'CAN8BITR15', 'value': can_data})
-                    else:
-                        break
                         
                 elif tag == 0x97:  # Неизвестный тег (1 байт)
                     if index < len(data):
@@ -398,15 +372,6 @@ class GalileoskyServer:
                     json_data['transaction']['latitude'] = tag_value.get('latitude')
                     json_data['transaction']['longitude'] = tag_value.get('longitude')
                     json_data['transaction']['coordinates_valid'] = tag_value.get('valid')
-
-            elif tag['tag'] == '0xC0':  # Общий расход топлива
-                json_data['transaction']['total_fuel_consumption_l'] = tag_value
-
-            elif tag['tag'] == '0xC1':  # CAN данные (уровень топлива в %)
-                if isinstance(tag_value, dict):
-                    json_data['transaction']['fuel_level_percent'] = tag_value.get('fuel_level_percent')
-                    json_data['transaction']['coolant_temperature'] = tag_value.get('coolant_temp_c')
-                    json_data['transaction']['engine_rpm'] = tag_value.get('engine_rpm')
 
             # elif tag['tag'] == '0xDC':  # Уровень топлива в литрах
             #     json_data['transaction']['fuel_level_l'] = tag_value
