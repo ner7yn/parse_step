@@ -7,14 +7,7 @@ import logging
 import json
 
 # Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('galileosky_server.log'),
-        logging.StreamHandler()
-    ]
-)
+
 
 class GalileoskyServer:
     def __init__(self, host='0.0.0.0', port=8000):
@@ -395,7 +388,7 @@ class GalileoskyServer:
                 json_data['transaction']['fuel_volume_l'] = tag_value / 400
                 
         logging.info(f"Обработка данных от IMEI: {json_data['imei']}")
-
+        
         return json_data
     
     def stop(self):
